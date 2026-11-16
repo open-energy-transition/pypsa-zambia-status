@@ -306,7 +306,7 @@ rule visualize_data:
 
 rule build_hydro_station_mapping:
     input:
-        powerplants = "workflows/pypsa-earth/resources/powerplants.csv",
+        powerplants = config["hydro_generation_validation"]["powerplants_path"],
         network     = config["hydro_generation_validation"]["network_path"],
     output:
         mapping = "resources/hydro_station_bus_map.csv",
