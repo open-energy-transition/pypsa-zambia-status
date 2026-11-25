@@ -174,7 +174,7 @@ def plot_annual_comparison(
     if has_ref:
         ref_vals = ref.loc[stations, ref_col]
         model_vals = model.loc[stations]
-        ax.bar(x - width / 2, ref_vals,   width, label=f"ZESCO reference ({model_year})", color="steelblue")
+        ax.bar(x - width / 2, ref_vals,   width, label=f"Reference ({model_year})", color="steelblue")
         ax.bar(x + width / 2, model_vals, width, label="PyPSA-Earth model", color="coral")
         for i, (r, m) in enumerate(zip(ref_vals, model_vals)):
             if r > 0:
@@ -238,7 +238,7 @@ def plot_monthly_comparison(
                 )
                 ax.plot(
                     ref_ts.index, ref_ts.values,
-                    marker="s", color="steelblue", label="ZESCO reference (2025)",
+                    marker="s", color="steelblue", label=f"Reference ({model_s.index[0].year})",
                 )
 
         ax.set_title(station)
@@ -253,6 +253,166 @@ def plot_monthly_comparison(
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info("Saved monthly comparison plot → %s", output_path)
+
+
+def extract_component_generation(
+    n: pypsa.Network,
+    mapping: pd.DataFrame,
+) -> pd.DataFrame:
+    """Extract snapshot-weighted electrical generation by reference station."""
+    weights = n.snapshot_weightings.generators
+
+    components = mapping.drop_duplicates(
+        subset=["component_type", "component_name"]
+    )
+
+    generation = {}
+
+    for row in components.itertuples(index=False):
+        name = row.component_name
+
+        if row.component_type == "Link":
+            power = -n.links_t.p1[name]
+        elif row.component_type == "StorageUnit":
+            power = n.storage_units_t.p_dispatch[name]
+        elif row.component_type == "Generator":
+            power = n.generators_t.p[name]
+        else:
+            raise ValueError(
+                f"Unsupported component type: {row.component_type}"
+            )
+
+        energy = power.mul(weights) / 1000
+
+        if row.station_name not in generation:
+            generation[row.station_name] = energy
+        else:
+            generation[row.station_name] += energy
+
+    return pd.DataFrame(generation)
+
+
+def validate_component_generation(n, mapping, snakemake):
+    """Validate component-level generation against dated ERB observations."""
+    model_year = n.snapshots[0].year
+
+    generation = extract_component_generation(n, mapping)
+
+    reference_mapping = mapping[
+        ["reference_station_name", "station_name"]
+    ].drop_duplicates()
+
+    if reference_mapping["reference_station_name"].duplicated().any():
+        raise ValueError("Ambiguous reference station mapping.")
+
+    annual_ref = pd.read_csv(snakemake.input.ref_annual)
+    annual_ref = annual_ref.loc[annual_ref["year"].eq(model_year)]
+
+    monthly_ref = pd.read_csv(
+        snakemake.input.ref_monthly,
+        parse_dates=["month"],
+    )
+    monthly_ref = monthly_ref.loc[
+        monthly_ref["month"].dt.year.eq(model_year)
+    ]
+
+    def aggregate_reference(reference, group_columns):
+        merged = reference_mapping.merge(
+            reference.rename(
+                columns={"station_name": "reference_station_name"}
+            ),
+            on="reference_station_name",
+            how="left",
+        )
+
+        if merged["generation_gwh"].isna().any():
+            raise ValueError("Missing generation reference observations.")
+
+        return merged.groupby(group_columns)["generation_gwh"].sum()
+
+    annual_ref = aggregate_reference(
+        annual_ref, ["station_name"]
+    )
+
+    monthly_ref = aggregate_reference(
+        monthly_ref, ["month", "station_name"]
+    ).unstack("station_name")
+
+    annual = pd.DataFrame({
+        "model_gwh": generation.sum(),
+        "reference_gwh": annual_ref,
+    })
+
+    annual["diff_gwh"] = (
+        annual["model_gwh"] - annual["reference_gwh"]
+    )
+
+    annual["diff_pct"] = (
+        100 * annual["diff_gwh"]
+        / annual["reference_gwh"].replace(0, np.nan)
+    )
+
+    monthly_model = generation.resample("MS").sum()
+
+    monthly_model.index.name = "month"
+    monthly_model.columns.name = "station_name"
+
+    monthly_ref.index.name = "month"
+    monthly_ref.columns.name = "station_name"
+
+    monthly = pd.concat(
+        {
+            "model_gwh": monthly_model.stack(),
+            "reference_gwh": monthly_ref.stack(),
+        },
+        axis=1,
+    )
+
+    monthly["diff_gwh"] = (
+        monthly["model_gwh"] - monthly["reference_gwh"]
+    )
+
+    monthly["diff_pct"] = (
+        100 * monthly["diff_gwh"]
+        / monthly["reference_gwh"].replace(0, np.nan)
+    )
+
+    out_annual = Path(snakemake.output.annual_csv)
+    out_monthly = Path(snakemake.output.monthly_csv)
+
+    out_annual.parent.mkdir(parents=True, exist_ok=True)
+    out_monthly.parent.mkdir(parents=True, exist_ok=True)
+
+    annual.to_csv(out_annual)
+    monthly.to_csv(out_monthly)
+
+    annual_plot_ref = annual_ref.to_frame(
+        name=f"gen_{model_year}_gwh"
+    )
+
+    monthly_plot_model = monthly_model.copy()
+    monthly_plot_model.index += pd.offsets.MonthEnd(0)
+
+    monthly_plot_ref = monthly_ref.T
+    monthly_plot_ref.columns = [
+        MONTH_ABBR[month.month - 1]
+        for month in monthly_ref.index
+    ]
+
+    plot_annual_comparison(
+        generation.sum(),
+        annual_plot_ref,
+        model_year,
+        Path(snakemake.output.annual_png),
+    )
+
+    plot_monthly_comparison(
+        monthly_plot_model,
+        monthly_plot_ref,
+        Path(snakemake.output.monthly_png),
+    )
+
+    logger.info("Annual generation comparison:\n%s", annual.to_string())
 
 
 def main(snakemake) -> None:
@@ -273,6 +433,10 @@ def main(snakemake) -> None:
 
     mapping = pd.read_csv(mapping_path)
     logger.info("Loaded station mapping:\n%s", mapping.to_string())
+
+    if "component_type" in mapping.columns:
+        validate_component_generation(n, mapping, snakemake)
+        return
 
     ref_annual  = load_annual_reference(ref_annual_path)
     ref_monthly = load_monthly_reference(ref_monthly_path)
