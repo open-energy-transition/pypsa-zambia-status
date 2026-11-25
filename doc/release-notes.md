@@ -10,6 +10,8 @@ SPDX-License-Identifier: CC-BY-4.0
 
 ### New Features and Major Changes
 
+* [Extend hydropower generation validation to cascading reservoirs and introduce 2023 validation scenarios and sensitivity comparisons PR #4](https://github.com/open-energy-transition/pypsa-zambia-status/pull/4)
+
 * [Add Chilean reference datasets to the data inventory PR #81](https://github.com/pypsa-meets-earth/pypsa-earth-status/pull/81)
 
 * [Support electricity validation for sector-coupled networks PR #70](https://github.com/pypsa-meets-earth/pypsa-earth-status/pull/70)
