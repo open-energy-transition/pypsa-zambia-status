@@ -308,6 +308,8 @@ rule build_hydro_station_mapping:
     input:
         powerplants = config["hydro_generation_validation"]["powerplants_path"],
         network     = config["hydro_generation_validation"]["network_path"],
+        simplify_busmap = config["hydro_generation_validation"]["simplify_busmap_path"],
+        cluster_busmap = config["hydro_generation_validation"]["cluster_busmap_path"],
         station_metadata = (
             "data/hydro_reference/ERB_station_metadata_2023.csv"
         ),

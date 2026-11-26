@@ -1,6 +1,6 @@
-station_name,project_ids,expected_capacity_mw,fallback_component_type,fallback_component_name,fallback_group
-Itezhi Tezhi,GHPT:G604089,120,StorageUnit,ZM0 9 hydro,Itezhi Tezhi
-Kafue Gorge Upper,GHPT:G604091,990,StorageUnit,ZM0 0 hydro,Kafue Gorge Upper and Lower
-Kafue Gorge Lower,GHPT:G604090,750,StorageUnit,ZM0 0 hydro,Kafue Gorge Upper and Lower
-Kariba North Bank and Extension,GHPT:G604149,1080,StorageUnit,ZM0 6 hydro,Kariba North Bank and Extension
-Victoria Falls,GHPT:G604096,108,Generator,ZM0 5 ror,Victoria Falls
+station_name,project_ids,expected_capacity_mw
+Itezhi Tezhi,GHPT:G604089,120
+Kafue Gorge Upper,GHPT:G604091,990
+Kafue Gorge Lower,GHPT:G604090,750
+Kariba North Bank and Extension,GHPT:G604149,1080
+Victoria Falls,GHPT:G604096,108

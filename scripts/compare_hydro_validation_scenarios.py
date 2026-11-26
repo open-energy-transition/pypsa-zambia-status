@@ -28,7 +28,7 @@ RUNS = {
 
 REFERENCE_DIR = Path("data/hydro_reference")
 
-KAFUE_GROUP = "Kafue Gorge Upper and Lower"
+KAFUE_GROUP = "Kafue Gorge Upper + Kafue Gorge Lower"
 
 KAFUE_MAPPING = {
     "Kafue Gorge Upper": KAFUE_GROUP,
@@ -50,7 +50,15 @@ def run_validation(label, run, zambia_root, output_dir, metadata):
 
     assert n.snapshots.year.unique().tolist() == [2023]
 
-    mapping = build_component_mapping(n, metadata)
+    resources = zambia_root / "resources" / run
+
+    mapping = build_component_mapping(
+        n,
+        metadata,
+        resources / "powerplants.csv",
+        resources / "bus_regions/busmap_elec_s.csv",
+        resources / "bus_regions/busmap_elec_s_10.csv",
+    )
     mapping.to_csv(directory / "station_mapping.csv", index=False)
 
     inputs = SimpleNamespace(

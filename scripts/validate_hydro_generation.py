@@ -294,6 +294,12 @@ def extract_component_generation(
 
 def validate_component_generation(n, mapping, snakemake):
     """Validate component-level generation against dated ERB observations."""
+    if "comparable" in mapping.columns:
+        mapping = mapping.loc[mapping["comparable"].eq(True)].copy()
+
+    if mapping.empty:
+        raise ValueError("No comparable hydro station groups found.")
+
     model_year = n.snapshots[0].year
 
     generation = extract_component_generation(n, mapping)
@@ -376,6 +382,68 @@ def validate_component_generation(n, mapping, snakemake):
         100 * monthly["diff_gwh"]
         / monthly["reference_gwh"].replace(0, np.nan)
     )
+
+    # Aggregate each reference station and model component only once.
+    reference_capacity = (
+        mapping.drop_duplicates("reference_station_name")
+        .groupby("station_name")["reference_capacity_mw"]
+        .sum()
+    )
+
+    model_capacity = (
+        mapping.drop_duplicates(["component_type", "component_name"])
+        .groupby("station_name")["component_capacity_mw"]
+        .sum()
+    )
+
+    weights = n.snapshot_weightings.generators
+
+    annual_hours = (
+        pd.Timestamp(f"{model_year + 1}-01-01")
+        - pd.Timestamp(f"{model_year}-01-01")
+    ).total_seconds() / 3600
+
+    annual["model_capacity_mw"] = model_capacity
+    annual["reference_capacity_mw"] = reference_capacity
+
+    annual["model_cf_pct"] = (
+        1e5 * annual["model_gwh"]
+        / (annual["model_capacity_mw"] * weights.sum())
+    )
+
+    annual["reference_cf_pct"] = (
+        1e5 * annual["reference_gwh"]
+        / (annual["reference_capacity_mw"] * annual_hours)
+    )
+
+    annual["cf_diff_pp"] = (
+        annual["model_cf_pct"] - annual["reference_cf_pct"]
+        if np.isclose(weights.sum(), annual_hours)
+        else np.nan
+    )
+
+    stations = monthly.index.get_level_values("station_name")
+    months = monthly.index.get_level_values("month")
+
+    monthly["model_capacity_mw"] = stations.map(model_capacity)
+    monthly["reference_capacity_mw"] = stations.map(reference_capacity)
+
+    model_hours = months.map(weights.resample("MS").sum())
+    reference_hours = months.days_in_month * 24
+
+    monthly["model_cf_pct"] = (
+        1e5 * monthly["model_gwh"]
+        / (monthly["model_capacity_mw"] * model_hours)
+    )
+
+    monthly["reference_cf_pct"] = (
+        1e5 * monthly["reference_gwh"]
+        / (monthly["reference_capacity_mw"] * reference_hours)
+    )
+
+    monthly["cf_diff_pp"] = (
+        monthly["model_cf_pct"] - monthly["reference_cf_pct"]
+    ).where(np.isclose(model_hours, reference_hours))
 
     out_annual = Path(snakemake.output.annual_csv)
     out_monthly = Path(snakemake.output.monthly_csv)

@@ -60,6 +60,9 @@ hydro_generation_validation:
   # Full path to the solved PyPSA-Earth network imported from the pypsa-zambia workflow.
   network_path: "../pypsa-zambia/results/config.zm.valid_2023_cascade_hydro_corrected/networks/elec_s_10_ec_lv1.0_3h.nc"
 
+  simplify_busmap_path: "../pypsa-zambia/resources/config.zm.valid_2023_cascade_hydro_corrected/bus_regions/busmap_elec_s.csv"
+  cluster_busmap_path: "../pypsa-zambia/resources/config.zm.valid_2023_cascade_hydro_corrected/bus_regions/busmap_elec_s_10.csv"
+
   country: "ZM"  # ISO2 country code used for cross-border flow detection
 
   reference_imports_gwh: null

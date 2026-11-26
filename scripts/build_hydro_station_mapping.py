@@ -59,99 +59,191 @@ def parse_project_ids(value) -> set[str]:
     return qualified
 
 
+def read_busmap(path: Path) -> pd.Series:
+    """Read a PyPSA-Earth busmap while preserving bus identifiers."""
+    busmap = pd.read_csv(path, index_col=0, dtype=str).iloc[:, 0]
+    busmap.index = busmap.index.astype(str)
+
+    if not busmap.index.is_unique:
+        raise ValueError(f"Duplicate bus identifiers in {path}")
+
+    return busmap
+
+
 def build_component_mapping(
     n: pypsa.Network,
     metadata: pd.DataFrame,
+    powerplants_path: Path,
+    simplify_busmap_path: Path,
+    cluster_busmap_path: Path,
 ) -> pd.DataFrame:
-    """Map reference stations to individual or aggregated hydro components."""
+    """Map reference stations to hydro components independently of clustering."""
+    plants = pd.read_csv(powerplants_path, dtype={"bus": str})
+    plants = plants.loc[plants["Fueltype"].eq("Hydro")].copy()
+
+    simplify = read_busmap(simplify_busmap_path)
+    cluster = read_busmap(cluster_busmap_path)
+
+    plants["clustered_bus"] = plants["bus"].map(simplify).map(cluster)
+    plants["qualified_ids"] = plants["projectID"].map(parse_project_ids)
+
     records = []
+    assigned_plants = set()
 
     for row in metadata.itertuples(index=False):
-        project_ids = str(row.project_ids).split(";")
+        project_ids = set(map(str.strip, row.project_ids.split(";")))
 
-        turbines = [
-            f"{project_id.strip()} turbine"
-            for project_id in project_ids
-            if f"{project_id.strip()} turbine" in n.links.index
+        matched = plants.loc[
+            plants["qualified_ids"].map(
+                lambda ids: bool(ids & project_ids)
+            )
         ]
 
-        if len(turbines) > 1:
+        if matched.empty:
             raise ValueError(
-                f"Ambiguous cascade turbine mapping for {row.station_name}"
+                f"No physical plants found for {row.station_name}"
             )
 
-        if turbines:
-            name = turbines[0]
-            component = n.links.loc[name]
+        if not np.isclose(
+            matched["Capacity"].sum(), row.expected_capacity_mw
+        ):
+            raise ValueError(
+                f"Physical capacity mismatch for {row.station_name}"
+            )
 
-            if component.carrier != "hydro":
-                raise ValueError(f"Unexpected carrier for {name}")
+        for plant_index, plant in matched.iterrows():
+            if plant_index in assigned_plants:
+                raise ValueError(
+                    f"Plant {plant['Name']} assigned to multiple stations"
+                )
 
-            component_type = "Link"
-            station_name = row.station_name
-            bus = component.bus1
-            capacity = component.p_nom * component.efficiency
+            assigned_plants.add(plant_index)
+            bus = plant["clustered_bus"]
 
-        else:
-            name = row.fallback_component_name
-            component_type = row.fallback_component_type
-            station_name = row.fallback_group
+            if pd.isna(bus) or bus not in n.buses.index:
+                raise ValueError(
+                    f"No valid clustered bus for {plant['Name']}"
+                )
 
-            if component_type == "StorageUnit":
-                table = n.storage_units
-                expected_carrier = "hydro"
-            elif component_type == "Generator":
-                table = n.generators
-                expected_carrier = "ror"
+            turbines = [
+                f"{pid} turbine"
+                for pid in plant["qualified_ids"]
+                if f"{pid} turbine" in n.links.index
+            ]
+
+            if turbines:
+                if len(turbines) != 1:
+                    raise ValueError(
+                        f"Ambiguous turbine mapping for {plant['Name']}"
+                    )
+
+                name = turbines[0]
+                component_type = "Link"
+                component = n.links.loc[name]
+
+                if component.carrier != "hydro" or component.bus1 != bus:
+                    raise ValueError(f"Invalid turbine mapping for {name}")
+
+                capacity = component.p_nom * component.efficiency
+
             else:
-                raise ValueError(
-                    f"Unsupported component type: {component_type}"
-                )
+                technology = plant["Technology"]
 
-            if name not in table.index:
-                raise ValueError(
-                    f"Hydro component {name} not found. "
-                    "Check the mapping for this clustered network."
-                )
+                if technology == "Reservoir":
+                    component_type = "StorageUnit"
+                    table = n.storage_units
+                    carrier = "hydro"
+                elif technology == "Run-Of-River":
+                    component_type = "Generator"
+                    table = n.generators
+                    carrier = "ror"
+                else:
+                    raise ValueError(
+                        f"Unsupported hydro technology: {technology}"
+                    )
 
-            component = table.loc[name]
+                candidates = table.loc[
+                    table["bus"].eq(bus)
+                    & table["carrier"].eq(carrier)
+                ]
 
-            if component.carrier != expected_carrier:
-                raise ValueError(f"Unexpected carrier for {name}")
+                if len(candidates) != 1:
+                    raise ValueError(
+                        f"Expected one {component_type} for "
+                        f"{plant['Name']} at {bus}, found {len(candidates)}"
+                    )
 
-            bus = component.bus
-            capacity = component.p_nom
+                name = candidates.index[0]
+                capacity = candidates.iloc[0].p_nom
 
-        records.append({
-            "station_name": station_name,
-            "reference_station_name": row.station_name,
-            "project_ids": row.project_ids,
-            "component_type": component_type,
-            "component_name": name,
-            "bus_id": bus,
-            "expected_capacity_mw": row.expected_capacity_mw,
-            "component_capacity_mw": capacity,
-        })
+            records.append({
+                "reference_station_name": row.station_name,
+                "project_ids": row.project_ids,
+                "plant_name": plant["Name"],
+                "original_bus": plant["bus"],
+                "component_type": component_type,
+                "component_name": name,
+                "bus_id": bus,
+                "expected_capacity_mw": plant["Capacity"],
+                "component_capacity_mw": capacity,
+            })
 
     mapping = pd.DataFrame(records)
 
-    # Validate aggregated capacity and prevent cross-station double counting.
-    for (_, name), group in mapping.groupby(
-        ["component_type", "component_name"]
-    ):
-        expected = group["expected_capacity_mw"].sum()
-        actual = group["component_capacity_mw"].iloc[0]
+    # Merge reference stations sharing model components, including
+    # transitive connections across multiple components.
+    groups = [{name} for name in metadata["station_name"]]
 
-        if group["station_name"].nunique() != 1:
-            raise ValueError(
-                f"Component {name} is assigned to multiple station groups."
-            )
+    component_keys = ["component_type", "component_name"]
+
+    for _, rows in mapping.groupby(component_keys):
+        stations = set(rows["reference_station_name"])
+        connected = [group for group in groups if group & stations]
+
+        for group in connected:
+            groups.remove(group)
+            stations.update(group)
+
+        groups.append(stations)
+
+    station_order = metadata["station_name"].tolist()
+
+    labels = {
+        station: " + ".join(name for name in station_order if name in group)
+        for group in groups
+        for station in group
+    }
+
+    mapping["station_name"] = mapping["reference_station_name"].map(labels)
+    mapping["comparable"] = True
+
+    reference_capacity = metadata.set_index("station_name")[
+        "expected_capacity_mw"
+    ]
+
+    mapping["reference_capacity_mw"] = mapping[
+        "reference_station_name"
+    ].map(reference_capacity)
+
+    # Exclude entire station groups if their generation cannot be
+    # isolated from additional or missing model capacity.
+    for (_, name), rows in mapping.groupby(component_keys):
+        expected = rows["expected_capacity_mw"].sum()
+        actual = rows["component_capacity_mw"].iloc[0]
 
         if not np.isclose(expected, actual, rtol=1e-6, atol=1e-6):
-            raise ValueError(
-                f"Capacity mismatch for {name}: "
-                f"expected {expected} MW, found {actual} MW."
+            station_group = rows["station_name"].iloc[0]
+
+            logger.warning(
+                "Excluding %s: component %s has %.3f MW, "
+                "but mapped reference plants account for %.3f MW.",
+                station_group, name, actual, expected,
             )
+
+            mapping.loc[
+                mapping["station_name"].eq(station_group),
+                "comparable",
+            ] = False
 
     return mapping
 
@@ -160,6 +252,8 @@ def build_mapping(
     powerplants_path: Path,
     network_path: Path,
     station_metadata_path: Path,
+    simplify_busmap_path: Path,
+    cluster_busmap_path: Path,
 ) -> pd.DataFrame:
     """
     Return a DataFrame with columns:
@@ -169,8 +263,14 @@ def build_mapping(
     n = pypsa.Network(str(network_path))
     station_metadata = pd.read_csv(station_metadata_path)
 
-    if "fallback_component_name" in station_metadata.columns:
-        return build_component_mapping(n, station_metadata)
+    if "expected_capacity_mw" in station_metadata.columns:
+        return build_component_mapping(
+            n,
+            station_metadata,
+            powerplants_path,
+            simplify_busmap_path,
+            cluster_busmap_path,
+        )
 
     ppl = pd.read_csv(powerplants_path)
 
@@ -277,6 +377,8 @@ if __name__ == "__main__":
         powerplants_path=Path(snakemake.input.powerplants),
         network_path=Path(snakemake.input.network),
         station_metadata_path=Path(snakemake.input.station_metadata),
+        simplify_busmap_path=Path(snakemake.input.simplify_busmap),
+        cluster_busmap_path=Path(snakemake.input.cluster_busmap),
     )
 
     out_path = Path(snakemake.output.mapping)
