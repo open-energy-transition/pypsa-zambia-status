@@ -1,0 +1,6 @@
+station_name,project_ids,expected_capacity_mw
+Itezhi Tezhi,GHPT:G604089,120
+Kafue Gorge Upper,GHPT:G604091,990
+Kafue Gorge Lower,GHPT:G604090,750
+Kariba North Bank and Extension,GHPT:G604149,1080
+Victoria Falls,GHPT:G604096,108

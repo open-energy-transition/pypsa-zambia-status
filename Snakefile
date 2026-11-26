@@ -308,10 +308,13 @@ rule build_hydro_station_mapping:
     input:
         powerplants = config["hydro_generation_validation"]["powerplants_path"],
         network     = config["hydro_generation_validation"]["network_path"],
+        simplify_busmap = config["hydro_generation_validation"]["simplify_busmap_path"],
+        cluster_busmap = config["hydro_generation_validation"]["cluster_busmap_path"],
+        station_metadata = (
+            "data/hydro_reference/ERB_station_metadata_2023.csv"
+        ),
     output:
         mapping = "resources/hydro_station_bus_map.csv",
-    params:
-        station_to_powerplants = config["hydro_generation_validation"]["station_to_powerplants"],
     log:
         "logs/build_hydro_station_mapping.log",
     script:
@@ -322,12 +325,12 @@ rule validate_hydro_generation:
     input:
         network      = config["hydro_generation_validation"]["network_path"],
         mapping      = "resources/hydro_station_bus_map.csv",
-        ref_annual   = "data/hydro_reference/Net_electricity_generated-large_hydro.csv",
-        ref_monthly  = "data/hydro_reference/ZESCO_Large_Hydro_Power_Plants_Electricity_Generation_Jan-Jun_2025.csv",
+        ref_annual   = "data/hydro_reference/ERB_annual_generation_2023.csv",
+        ref_monthly  = "data/hydro_reference/ERB_monthly_generation_2023.csv",
     output:
         annual_csv   = "results/hydro_validation/annual_comparison.csv",
         annual_png   = "results/hydro_validation/annual_comparison.png",
-        monthly_csv  = "results/hydro_validation/monthly_model.csv",
+        monthly_csv  = "results/hydro_validation/monthly_comparison.csv",
         monthly_png  = "results/hydro_validation/monthly_comparison.png",
     log:
         "logs/validate_hydro_generation.log",
